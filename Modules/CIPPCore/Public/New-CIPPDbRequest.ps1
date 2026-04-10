@@ -34,7 +34,7 @@ function New-CIPPDbRequest {
         if (-not $Tenant) {
             throw "Tenant '$TenantFilter' not found"
         }
-        $SafeTenantFilter = ConvertTo-CIPPODataFilterValue -Value $Tenant.defaultDomainName -Type String
+        $SafeTenantFilter = ConvertTo-CIPPODataFilterValue -Value $Tenant -Type String
         $SafeTypeFilter = if ($Type) { ConvertTo-CIPPODataFilterValue -Value $Type -Type String } else { $null }
 
         if ($Type) {
