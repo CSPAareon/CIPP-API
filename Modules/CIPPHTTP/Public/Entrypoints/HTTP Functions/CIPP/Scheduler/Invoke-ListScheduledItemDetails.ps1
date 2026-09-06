@@ -27,7 +27,8 @@ function Invoke-ListScheduledItemDetails {
 
     # Retrieve the task information
     $TaskTable = Get-CIPPTable -TableName 'ScheduledTasks'
-    $Task = Get-CIPPAzDataTableEntity @TaskTable -Filter "RowKey eq '$SafeRowKey' and PartitionKey eq 'ScheduledTask'" | Select-Object RowKey, Name, TaskState, Command, Parameters, Recurrence, ExecutedTime, ScheduledTime, PostExecution, Tenant, TenantGroup, Hidden, Results, Timestamp, Trigger
+    $Task = Get-CIPPAzDataTableEntity @TaskTable -Filter "RowKey eq '$SafeRowKey' and PartitionKey eq 'ScheduledTask'" | Select-Object RowKey, Name, TaskState, Command, Parameters, Recurrence, ExecutedTime, ScheduledTime, PostExecution, PostExecutionResults, Tenant, TenantGroup, Tenants, TenantSelectionVersion, excludedTenants, excludedTenantGroups, Hidden, Results, Timestamp, Trigger
+
 
     if (-not $Task) {
         return ([HttpResponseContext]@{
@@ -35,6 +36,17 @@ function Invoke-ListScheduledItemDetails {
                 Body       = "Task with RowKey '$RowKey' not found"
             })
         return
+    }
+
+    # AnyTenant: restricted callers may only read tasks for tenants in scope
+    $AllowedTenants = Test-CIPPAccess -Request $Request -TenantList
+    if ($AllowedTenants -notcontains 'AllTenants') {
+        if (-not $Task.Tenant -or -not (Get-Tenants -TenantFilter $Task.Tenant)) {
+            return ([HttpResponseContext]@{
+                    StatusCode = [HttpStatusCode]::Forbidden
+                    Body       = 'Access to this scheduled task is not allowed'
+                })
+        }
     }
 
     # Process the task (similar to the way it's done in Invoke-ListScheduledItems)
@@ -61,7 +73,21 @@ function Invoke-ListScheduledItemDetails {
     } catch {}
 
     # Handle tenant group display information (similar to Invoke-ListScheduledItems)
-    if ($Task.TenantGroup) {
+    if ($Task.Tenants) {
+        # Tenant stays 'AllTenants' for the execution gates, so report the real scope from Tenants.
+        try {
+            $TenantsParsed = $Task.Tenants | ConvertFrom-Json -Depth 10 -ErrorAction Stop
+            $Task.Tenant = @($TenantsParsed | ForEach-Object {
+                    [PSCustomObject]@{
+                        label = $_.label ?? $_.value
+                        value = $_.value
+                        type  = $_.type ?? 'Tenant'
+                    }
+                })
+        } catch {
+            Write-Warning "Failed to parse tenant selection for task $($Task.RowKey): $($_.Exception.Message)"
+        }
+    } elseif ($Task.TenantGroup) {
         try {
             $TenantGroupObject = $Task.TenantGroup | ConvertFrom-Json -ErrorAction SilentlyContinue
             if ($TenantGroupObject) {
@@ -98,6 +124,15 @@ function Invoke-ListScheduledItemDetails {
         } catch {
             Write-Warning "Failed to parse trigger information for task $($Task.RowKey): $($_.Exception.Message)"
             # Fall back to keeping original trigger value
+        }
+    }
+
+    # Delivery outcomes of the post-execution notifications (one per channel attempt), stored as JSON
+    if ($Task.PostExecutionResults) {
+        try {
+            $Task.PostExecutionResults = @($Task.PostExecutionResults | ConvertFrom-Json -ErrorAction Stop)
+        } catch {
+            $Task.PostExecutionResults = @()
         }
     }
 
